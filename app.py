@@ -2,8 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# Set Streamlit page to use the full width
-st.set_page_config(layout="wide")
+# Sets page title and favicon
+st.set_page_config(
+    page_title="NorimaRB",
+    page_icon="🍔",
+    layout="wide"
+)
 
 uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
 
