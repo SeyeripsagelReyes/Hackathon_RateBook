@@ -1,79 +1,82 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
+from upload_handler import process_excel_file
 
-# Sets page title and favicon
 st.set_page_config(
     page_title="NorimaRB",
     page_icon="🍔",
     layout="wide"
 )
 
-uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
+st.title("Norima Rate Book")
 
-if uploaded_file:
-    # Read all sheet names
-    xls = pd.ExcelFile(uploaded_file)
-    sheet_names = xls.sheet_names
+# Initialize session state
+for key in ["required_processed", "required_sheets", "current_file", "required_file_name", "remove_required_flag"]:
+    if key not in st.session_state:
+        st.session_state[key] = False if "processed" in key or "flag" in key else None
+        if key == "required_sheets":
+            st.session_state[key] = {}
 
-    for sheet_name in sheet_names:
-        st.subheader(f"{sheet_name}")
-        df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
+# Handle remove request at the very top
+if st.session_state.remove_required_flag:
+    # Reset all state
+    st.session_state.required_processed = False
+    st.session_state.required_sheets = {}
+    st.session_state.required_file_name = None
+    st.session_state.current_file = None
+    st.session_state.remove_required_flag = False
+    st.rerun()  # Safe to rerun at the very start
+    st.stop()
 
-        # Detect header row
-        header_row = None
-        for i in range(len(df_raw)):
-            if df_raw.iloc[i].notna().sum() >= 2:
-                header_row = i
-                break
+# Side-by-side uploaders
+col1, col2 = st.columns(2)
 
-        if header_row is None:
-            st.warning(f"No valid header row detected in sheet '{sheet_name}'.")
-            continue
+with col1:
+    # Show uploader if no required file uploaded
+    if not st.session_state.required_processed:
+        required_file = st.file_uploader("Upload Required RateBook Data", type=["xlsx", "xls"])
+        if required_file:
+            st.session_state.required_sheets = process_excel_file(required_file)
+            st.session_state.required_processed = True
+            st.session_state.required_file_name = required_file.name
+            st.success(f"✅ Required File processed: {required_file.name}")
+    else:
+        st.success(f"✅ Required File uploaded: {st.session_state.required_file_name}")
+        # Flag the remove request instead of rerunning immediately
+        if st.button("Remove Required File", key="remove_required"):
+            st.session_state.remove_required_flag = True
+            st.rerun()
 
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=header_row)
-        df = df.dropna(how="all", axis=1)  # Drop fully empty columns
+with col2:
+    # Show Current File uploader only if Required File is processed
+    if st.session_state.required_processed:
+        st.session_state.current_file = st.file_uploader(
+            "Upload Current RateBook Data", type=["xlsx", "xls"], key="current_uploader"
+        )
+        if st.session_state.current_file:
+            st.success(f"✅ Current File uploaded: {st.session_state.current_file.name}")
 
-        # Replace empty strings or whitespace-only cells with NaN
-        df = df.replace(r'^\s*$', np.nan, regex=True)
+# Display side by side
+col_left, col_right = st.columns(2)
 
-        # Find first empty row robustly
-        empty_rows = [i for i, row in df.iterrows() if all(pd.isna(row))]
+# Left section: Required File #
+with col_left:
+    if st.session_state.required_processed:
+        st.subheader(f"📂 Required File: {st.session_state.required_file_name}")
+        for sheet_name, df in st.session_state.required_sheets.items():
+            row_count, col_count = df.shape
+            with st.expander(f"📑 {sheet_name} — {row_count} rows × {col_count} cols", expanded=False):
+                st.dataframe(df, use_container_width=True)
+    else:
+        st.info("Upload Required RateBook Data to start.")
 
-        if empty_rows:
-            df = df.loc[:empty_rows[0] - 1]
-
-        # Stop at first "Unnamed" column if exists
-        unnamed_cols = [c for c in df.columns if str(c).startswith("Unnamed")]
-        if unnamed_cols:
-            first_unnamed = unnamed_cols[0]
-            cutoff_idx = df.columns.get_loc(first_unnamed)
-            df = df.iloc[:, :cutoff_idx]
-
-        # SECOND CLEANING PASS: remove any rows that are now fully NaN
-        df = df.dropna(how="all", axis=0)
-
-        # Create wide layout columns — more space for table
-        col1, col2 = st.columns([6, 1], gap="large")
-
-        with col1:
-            st.dataframe(df, use_container_width=True)
-
-        with col2:
-            st.markdown(
-                f"""
-                <div style="
-                    background-color: #0e1117;
-                    padding: 15px 20px;
-                    border-radius: 8px;
-                    text-align: center;
-                    border: 1px solid #ddd;
-                    margin-top: 20px;
-                ">
-                    <h4 style="margin: 0;">📊 Summary</h4>
-                    <p style="margin: 8px 0 0 0;"><b>Rows:</b> {len(df)}</p>
-                    <p style="margin: 4px 0 0 0;"><b>Columns:</b> {len(df.columns)}</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+# Right section: Current File #
+with col_right:
+    if st.session_state.current_file:
+        st.subheader(f"📂 Current File: {st.session_state.current_file.name}")
+        current_sheets = process_excel_file(st.session_state.current_file)
+        for sheet_name, df in current_sheets.items():
+            row_count, col_count = df.shape
+            with st.expander(f"📑 {sheet_name} — {row_count} rows × {col_count} cols", expanded=False):
+                st.dataframe(df, use_container_width=True)
+    elif st.session_state.required_processed:
+        st.info("Upload Current RateBook Data to compare with Required Ratebook Data.")
