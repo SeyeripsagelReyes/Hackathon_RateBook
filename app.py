@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 from upload_handler import process_excel_file
 
 st.set_page_config(
@@ -9,74 +10,141 @@ st.set_page_config(
 
 st.title("Norima Rate Book")
 
-# Initialize session state
-for key in ["required_processed", "required_sheets", "current_file", "required_file_name", "remove_required_flag"]:
-    if key not in st.session_state:
-        st.session_state[key] = False if "processed" in key or "flag" in key else None
-        if key == "required_sheets":
-            st.session_state[key] = {}
+# --------------------------------------------------
+# Load external CSS
+# --------------------------------------------------
+with open("style.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# Handle remove request at the very top
-if st.session_state.remove_required_flag:
-    # Reset all state
-    st.session_state.required_processed = False
-    st.session_state.required_sheets = {}
-    st.session_state.required_file_name = None
-    st.session_state.current_file = None
-    st.session_state.remove_required_flag = False
-    st.rerun()  # Safe to rerun at the very start
-    st.stop()
+# --------------------------------------------------
+# Session State
+# --------------------------------------------------
+defaults = {
+    "required_file": None,
+    "current_file": None,
+    "required_sheets": None,   # FILTERED
+    "current_sheets": None,    # RAW
+    "reset_flag": False
+}
 
-# Side-by-side uploaders
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# --------------------------------------------------
+# Reset Logic
+# --------------------------------------------------
+if st.session_state.reset_flag:
+    for k in defaults:
+        st.session_state[k] = defaults[k]
+    st.session_state.reset_flag = False
+    st.rerun()
+
+# --------------------------------------------------
+# Upload Section
+# --------------------------------------------------
 col1, col2 = st.columns(2)
 
 with col1:
-    # Show uploader if no required file uploaded
-    if not st.session_state.required_processed:
-        required_file = st.file_uploader("Upload Required RateBook Data", type=["xlsx", "xls"])
-        if required_file:
-            st.session_state.required_sheets = process_excel_file(required_file)
-            st.session_state.required_processed = True
-            st.session_state.required_file_name = required_file.name
-            st.success(f"✅ Required File processed: {required_file.name}")
+    if st.session_state.required_file is None:
+        file = st.file_uploader("Upload Required RateBook", type=["xlsx", "xls"])
+        if file:
+            st.session_state.required_file = file
+            st.session_state.required_sheets = process_excel_file(file)
+            st.success(f"✅ Required file uploaded: {file.name}")
     else:
-        st.success(f"✅ Required File uploaded: {st.session_state.required_file_name}")
-        # Flag the remove request instead of rerunning immediately
-        if st.button("Remove Required File", key="remove_required"):
-            st.session_state.remove_required_flag = True
-            st.rerun()
+        st.success(f"✅ Required file: {st.session_state.required_file.name}")
 
 with col2:
-    # Show Current File uploader only if Required File is processed
-    if st.session_state.required_processed:
-        st.session_state.current_file = st.file_uploader(
-            "Upload Current RateBook Data", type=["xlsx", "xls"], key="current_uploader"
-        )
-        if st.session_state.current_file:
-            st.success(f"✅ Current File uploaded: {st.session_state.current_file.name}")
+    if st.session_state.required_file and st.session_state.current_file is None:
+        file = st.file_uploader("Upload Current RateBook", type=["xlsx", "xls"])
+        if file:
+            st.session_state.current_file = file
+            st.session_state.current_sheets = pd.read_excel(file, sheet_name=None)
+            st.success(f"✅ Current file uploaded: {file.name}")
+    elif st.session_state.current_file:
+        st.success(f"✅ Current file: {st.session_state.current_file.name}")
 
-# Display side by side
-col_left, col_right = st.columns(2)
+# --------------------------------------------------
+# Display
+# --------------------------------------------------
+left, right = st.columns(2)
 
-# Left section: Required File #
-with col_left:
-    if st.session_state.required_processed:
-        st.subheader(f"📂 Required File: {st.session_state.required_file_name}")
-        for sheet_name, df in st.session_state.required_sheets.items():
-            row_count, col_count = df.shape
-            with st.expander(f"📑 {sheet_name} — {row_count} rows × {col_count} cols", expanded=False):
+# -------- Required (Filtered) --------
+with left:
+    if st.session_state.required_sheets:
+        st.subheader("📂 Required File (Filtered)")
+        for name, df in st.session_state.required_sheets.items():
+            with st.expander(f"📑 {name} ({df.shape[0]} rows)"):
                 st.dataframe(df, use_container_width=True)
     else:
-        st.info("Upload Required RateBook Data to start.")
+        st.info("Upload Required RateBook to start.")
 
-# Right section: Current File #
-with col_right:
-    if st.session_state.current_file:
-        st.subheader(f"📂 Current File: {st.session_state.current_file.name}")
-        current_sheets = process_excel_file(st.session_state.current_file)
-        for sheet_name, df in current_sheets.items():
-            row_count, col_count = df.shape
-            with st.expander(f"📑 {sheet_name} — {row_count} rows × {col_count} cols", expanded=False):
-                st.dataframe(df, use_container_width=True)
-    elif st.session_state.required_processed:
-        st.info("Upload Current RateBook Data to compare with Required Ratebook Data.")
+# -------- Current + Comparison --------
+with right:
+    if st.session_state.current_sheets:
+        st.subheader("📂 Current File (Compared to Required)")
+
+        def normalize_value(val):
+            """Normalize for comparison"""
+            if isinstance(val, str):
+                val = val.strip().lower()
+                if val in ["yes", "true"]:
+                    return True
+                if val in ["no", "false"]:
+                    return False
+                try:
+                    return float(val)
+                except:
+                    return val
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, bool):
+                return val
+            return str(val).strip().lower()
+
+        def row_matches(req_row, cur_row):
+            """Check if all values in req_row exist in cur_row"""
+            req_norm = [normalize_value(v) for v in req_row]
+            cur_norm = [normalize_value(v) for v in cur_row]
+            return all(any(r == c for c in cur_norm) for r in req_norm)
+
+        with st.spinner("🔄 Comparing required rows with current file..."):
+            for sheet, req_df in st.session_state.required_sheets.items():
+
+                if sheet not in st.session_state.current_sheets:
+                    st.error(f"❌ Sheet '{sheet}' missing in Current File")
+                    continue
+
+                cur_df = st.session_state.current_sheets[sheet]
+
+                # Fill NaNs and convert to strings for normalization
+                req_cmp = req_df.fillna("").astype(str)
+                cur_cmp = cur_df.fillna("").astype(str)
+
+                # Find missing rows
+                missing_rows = []
+                for req_idx, req_row in req_cmp.iterrows():
+                    matched = any(row_matches(req_row, cur_row) for _, cur_row in cur_cmp.iterrows())
+                    if not matched:
+                        missing_rows.append(req_row)
+
+                if not missing_rows:
+                    status = "✅ All required rows exist"
+                else:
+                    status = f"⚠️ {len(missing_rows)} required rows missing"
+
+                with st.expander(
+                    f"📑 {sheet} ({cur_df.shape[0]} rows) — {status}",
+                    expanded=False
+                ):
+                    st.dataframe(cur_df, use_container_width=True)
+
+
+# --------------------------------------------------
+# Floating Remove Button
+# --------------------------------------------------
+if st.session_state.required_file:
+    if st.button("Reset"):
+        st.session_state.reset_flag = True
+        st.rerun()
